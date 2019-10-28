@@ -1,0 +1,37 @@
+# detector geometry for GRETINA
+# updated version of geometry file for asymmetric hexagonal crystals,
+# of two different types -- Nov 07/KL
+6 6              # number of segments, z, phi directions
+8 14 16 17 21 14 # thickness of segments, front to back (z direction)
+
+# next comes the corners (real at front, virtual at back) of the crystal
+#               x          y           z
+
+# corners for crystal type A, at front of det
+            -15.0548    26.1868     0.0000 
+             18.3753    27.9457     0.0000 
+             34.5873     0.6657     0.0000 
+             15.8510   -29.5186     0.0000 
+            -18.3283   -25.5333     0.0000 
+            -30.1478     1.8719     0.0000
+# corners for crystal type A  at back of det
+            -23.6814    41.1311    90.0000 
+             26.7421    43.7842    90.0000 
+             52.1781     0.9828    90.0000 
+             22.9555   -46.0950    90.0000 
+            -28.8096   -40.0592    90.0000 
+            -47.3682     2.9715    90.0000
+# corners for crystal type B  at front of det
+             30.3325    16.6479     0.0000 
+             30.3325   -16.6962     0.0000 
+              3.2430   -33.2720     0.0000 
+            -27.3023   -16.2481     0.0000 
+            -29.6607    14.5631     0.0000 
+             -0.9109    33.4637     0.0000
+# corners for crystal type B  at back of det
+             45.7428    25.1368    90.0000 
+             45.7428   -25.1850    90.0000 
+              3.2524   -51.1846    90.0000 
+            -42.7582   -25.5414    90.0000 
+            -46.4594    22.8111    90.0000 
+             -3.0092    51.3760    90.0000

@@ -1,0 +1,27 @@
+Boundaries
+eg (1mm)
+>> sig 20 26.5 8.4 k.spe   -> seg 5
+>> sig 20 26.5 8.5 k.spe   -> seg 11
+(0.5mm)
+>> sig 20 26.5 7.8 k.spe  - now okay! was really bad, fixed
+>> sig 20 26.5 8.1 k.spe  - FIXED? comes from vertical drift of electrons, due to step in outer surface at z=8.0
+>> sig 20 27.2 8.4 k.spe  - FIXED?
+
+
+
+
+Unformatted files, wp files - remove in fieldgen
+
+fractional volumes in fieldgen
+
+get rid of remaining global variables
+
+
+
+initial_segment, project_to_edges - not needed?  - DONE
+
+
+
+grep "^ 20.00 " fields/ev_a2.dat > fields/ev_x20.dat
+grep "^ 20.00 " ev_a2.dat > ev_x20.dat
+grep " 20.00\t" ev_a2.dat > ev_z20.dat
