@@ -20,7 +20,6 @@
 #include "calc_signal.h"
 #include "signal_calc_util.h"
 
-#define N_WP_FILES 37
 #define TOT_NSEGMENTS (setup->nseg_z * setup->nseg_phi + 1)
 
 static int    nearest_field_grid_index(GRETA_Siggen_Setup *setup, point pt, int_pt *ipt);
@@ -43,11 +42,6 @@ int field_setup(GRETA_Siggen_Setup *setup) {
 
   int  nsegs = setup->nsegments;
 
-  if (nsegs != N_WP_FILES) {
-    error("number of segments = %d != %d = N_WP_FILES\n", nsegs, N_WP_FILES);
-    return -1;
-  }
-
   setup->xmin = setup->ymin = -setup->xtal_radius;
   setup->xmax = setup->ymax = setup->xtal_radius;
   setup->zmin = 0; setup->zmax = setup->xtal_length;
@@ -56,6 +50,9 @@ int field_setup(GRETA_Siggen_Setup *setup) {
   setup->numy = (int)rint((setup->ymax - setup->ymin)/setup->xtal_grid) + 1;
   setup->numz = (int)rint((setup->zmax - setup->zmin)/setup->xtal_grid) + 1;
   tell(NORMAL, "numx, numy, numz: %d %d %d\n", setup->numx, setup->numy, setup->numz);
+  setup->x0 = -(setup->numx/2) * setup->xtal_grid;
+  setup->y0 = -(setup->numy/2) * setup->xtal_grid;
+  tell(NORMAL, "x0, y0: %.3f %.3f\n", setup->x0, setup->y0);
 
   tell(NORMAL, "Segments in z direction: %d, segments in phi direction: %d\n",
        setup->nseg_z, setup->nseg_phi);
@@ -276,8 +273,8 @@ static vector efield(GRETA_Siggen_Setup *setup, point pt, int_pt ipt) {
 static int grid_weights(GRETA_Siggen_Setup *setup, point pt, int_pt ipt, float out[2][2][2]) {
   float x, y, z;
 
-  x = (pt.x - setup->xmin)/setup->xtal_grid - ipt.x;
-  y = (pt.y - setup->ymin)/setup->xtal_grid - ipt.y;
+  x = (pt.x - setup->x0)/setup->xtal_grid - ipt.x;
+  y = (pt.y - setup->y0)/setup->xtal_grid - ipt.y;
   z = (pt.z - setup->zmin)/setup->xtal_grid - ipt.z;
 
   out[0][0][0] = (1.0 - x) * (1.0 - y) * (1.0 - z);
@@ -365,8 +362,8 @@ static int nearest_field_grid_index(GRETA_Siggen_Setup *setup, point pt, int_pt 
 static int_pt field_grid_index(GRETA_Siggen_Setup *setup, point pt) {
   int_pt ipt;
 
-  ipt.x = (pt.x - setup->xmin)/setup->xtal_grid;  // NOTE: tried adding lrintf()  Oct2019
-  ipt.y = (pt.y - setup->ymin)/setup->xtal_grid;  // CHECKED - lrintf causes signal calc failures
+  ipt.x = (pt.x - setup->x0)/setup->xtal_grid;    // NOTE: tried adding lrintf()  Oct2019
+  ipt.y = (pt.y - setup->y0)/setup->xtal_grid;    // CHECKED - lrintf causes signal calc failures
   ipt.z = (pt.z - setup->zmin)/setup->xtal_grid;  //   and bad field. Do NOT add lrintf here.
 
   return ipt;
@@ -567,7 +564,7 @@ static int setup_velo(GRETA_Siggen_Setup *setup) {
 */
 static int setup_efield(GRETA_Siggen_Setup *setup) {
   FILE *fp;
-  char *cp, line[MAX_LINE], fname[MAX_LINE];
+  char *cp, line[MAX_LINE], fname_unf[MAX_LINE];
   int i, j, k;
   double x, y, z;
   double fx, fy, fz;
@@ -606,13 +603,18 @@ static int setup_efield(GRETA_Siggen_Setup *setup) {
   }
 
   /* try to read from unformatted file */
-  snprintf(fname, 256, "%s_unf", setup->field_name);
-  if ((fp = fopen(fname, "r"))) {
-    tell(NORMAL, "Reading field from unformatted file: %s\n", fname);
+  strncpy(fname_unf, setup->field_name, sizeof(fname_unf));
+  if (!strstr(fname_unf, "unf")) strncat(fname_unf, "_unf", sizeof(fname_unf)-4);
+  if ((fp = fopen(fname_unf, "r"))) {
+    tell(NORMAL, "Reading field from unformatted file: %s\n", fname_unf);
+    while (fgets(line, sizeof(line), fp) && line[0] == '#' &&
+           !strstr(line, "start of unformatted data"))
+      ;
+    if (line[0] != '#') rewind(fp);
     for (i = 0; i < setup->numx; i++) {
       for (j = 0; j < setup->numy; j++) {
         if (fread(efld[i][j], sizeof(vector), setup->numz, fp) != setup->numz) {
-          error("Error while reading %s\n", fname);
+          error("Error while reading %s\n", fname_unf);
           return -1;
         }
       }
@@ -650,8 +652,8 @@ static int setup_efield(GRETA_Siggen_Setup *setup) {
         return 1;
       }
     }
-    i = lrint((x - setup->xmin)/setup->xtal_grid);
-    j = lrint((y - setup->ymin)/setup->xtal_grid);
+    i = lrint((x - setup->x0)/setup->xtal_grid);
+    j = lrint((y - setup->y0)/setup->xtal_grid);
     k = lrint((z - setup->zmin)/setup->xtal_grid);
     if (i < 0 || i >= setup->numx || j < 0 || j >= setup->numy || k < 0 || k >= setup->numz)
       continue;
@@ -664,13 +666,12 @@ static int setup_efield(GRETA_Siggen_Setup *setup) {
 
   setup->efld = efld;
 
-  snprintf(fname, 256, "%s_unf", setup->field_name);
-  if ((fp = fopen(fname, "w"))) {
-    tell(NORMAL, "Saving field to unformatted file: %s\n", fname);
+  if (!strstr(setup->field_name, "unf") && (fp = fopen(fname_unf, "w"))) {
+    tell(NORMAL, "Saving field to unformatted file: %s\n", fname_unf);
     for (i = 0; i < setup->numx; i++) {
       for (j = 0; j < setup->numy; j++) {
         if (fwrite(efld[i][j], sizeof(vector), setup->numz, fp) != setup->numz) {
-          error("Error while writing %s\n", fname);
+          error("Error while writing %s\n", fname_unf);
         }
       }
     }
@@ -700,7 +701,7 @@ static int setup_wp(GRETA_Siggen_Setup *setup)
 {
   int    fno, segno;
   FILE   *fp;
-  char   *cp, line[MAX_LINE], str[MAX_LINE], fname[MAX_LINE];
+  char   *cp, line[MAX_LINE], str[MAX_LINE], fname[MAX_LINE], fname_unf[MAX_LINE];
   int    i, j, k;
   int    nsegments = TOT_NSEGMENTS;
   double x, y, z, wp;
@@ -746,15 +747,52 @@ static int setup_wp(GRETA_Siggen_Setup *setup)
       }
     }
   }
-  /* try to read from one big unformatted file */
-  snprintf(fname, 256, "%s_unf", setup->wp_name);
-  if ((fp = fopen(fname, "r"))) {
-    tell(NORMAL, "Reading WPs from unformatted file: %s\n", fname);
+
+  if (strstr(setup->wp_name, "unf")) {  // individual files are unformatted
+    float *wp2 = malloc(setup->numz*sizeof(float));
+    fname_insert(setup->wp_name, fname, "-segxx");
+    tell(NORMAL, "Reading weighting potentials from %d files %s\n",
+         nsegments, fname);
+    for (fno = segno = 0; fno < nsegments; fno++, segno++) {
+      snprintf(str, 256, "-seg%2.2d", segno);
+      fname_insert(setup->wp_name, fname, str);
+      if ((fp = fopen(fname, "r")) == NULL) {
+        error("failed to open file: %s\n", fname);
+        return -1;
+      }
+
+      while (fgets(line, sizeof(line), fp) && line[0] == '#' &&
+             !strstr(line, "start of unformatted data"))
+        ;
+      if (line[0] != '#') rewind(fp);
+      for (i = 0; i < setup->numx; i++) {
+        for (j = 0; j < setup->numy; j++) {
+          if (fread(wp2, sizeof(float), setup->numz, fp) != setup->numz) {
+            error("Error while reading %s\n", fname);
+            return -1;
+          }
+          for (k = 0; k < setup->numz; k++) wpot[i][j][k][segno] = wp2[k];
+        }
+      }
+      fclose(fp);
+    }
+    tell(NORMAL, "Done reading weighting potentials: %d x %d x %d x %d values\n",
+         i, j, k, segno);
+    setup->wpot = wpot;
+    return 0;
+  }
+
+  /* individual files are formatted; try to read from one big unformatted file */
+  strncpy(fname_unf, setup->wp_name, sizeof(fname_unf));
+  strncat(fname_unf, "_unf", sizeof(fname_unf)-4);
+  if (!strstr(setup->wp_name, "unf") && (fp = fopen(fname_unf, "r"))) {
+    tell(NORMAL, "Reading WPs from unformatted file: %s\n", fname_unf);
     for (i = 0; i < setup->numx; i++) {
       for (j = 0; j < setup->numy; j++) {
         for (k = 0; k < setup->numz; k++) {
-          if (fread(wpot[i][j][k], sizeof(float), setup->nsegments, fp) != setup->nsegments) {
-            error("Error while reading %s\n", fname);
+          if (fread(wpot[i][j][k], sizeof(float), nsegments, fp) != nsegments) {
+            error("Error while reading %s\n", fname_unf);
+            printf("%d %d %d\n", i, j, k);
             return -1;
           }
         }
@@ -764,10 +802,11 @@ static int setup_wp(GRETA_Siggen_Setup *setup)
     tell(NORMAL, "Done reading %d weighting potentials\n", nsegments);
     setup->wpot = wpot;
     return 0;
+
   }
 
   /* that didn't work; read from formatted WP files */
-  for (fno = segno = 0; fno < N_WP_FILES; fno++, segno++) {
+  for (fno = segno = 0; fno < nsegments; fno++, segno++) {
     snprintf(str, 256, "-seg%2.2d", segno);
     fname_insert(setup->wp_name, fname, str);
     if ((fp = fopen(fname, "r")) == NULL) {
@@ -793,8 +832,8 @@ static int setup_wp(GRETA_Siggen_Setup *setup)
          return 1;
        }
      }
-     i = lrintf((x - setup->xmin)/setup->xtal_grid);
-     j = lrintf((y - setup->ymin)/setup->xtal_grid);
+     i = lrintf((x - setup->x0)/setup->xtal_grid);
+     j = lrintf((y - setup->y0)/setup->xtal_grid);
      k = lrintf((z - setup->zmin)/setup->xtal_grid);
      if (i < 0 || i >= setup->numx || j < 0 || j >= setup->numy || k < 0 || k >= setup->numz)
        continue;
@@ -809,14 +848,13 @@ static int setup_wp(GRETA_Siggen_Setup *setup)
 
   setup->wpot = wpot;
 
-  snprintf(fname, 256, "%s_unf", setup->wp_name);
-  if ((fp = fopen(fname, "w"))) {
-    tell(NORMAL, "Saving WPs to unformatted file: %s\n", fname);
+  if (!strstr(setup->wp_name, "unf") && (fp = fopen(fname_unf, "w"))) {
+    tell(NORMAL, "Saving WPs to unformatted file: %s\n", fname_unf);
     for (i = 0; i < setup->numx; i++) {
       for (j = 0; j < setup->numy; j++) {
         for (k = 0; k < setup->numz; k++) {
-          if (fwrite(wpot[i][j][k], sizeof(float), setup->nsegments, fp) != setup->nsegments) {
-            error("Error while writing %s\n", fname);
+          if (fwrite(wpot[i][j][k], sizeof(float), nsegments, fp) != nsegments) {
+            error("Error while writing %s\n", fname_unf);
           }
         }
       }

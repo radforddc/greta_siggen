@@ -51,7 +51,7 @@ int signal_calc_init(GRETA_Siggen_Setup *setup, int *nsegs)
   char fname[256];
 
   strncpy(fname, setup->config_file_name, 256);
-  tell(TERSE, "Reading configuration file: %s | %s\n", setup->config_file_name, fname);
+  tell(TERSE, "Reading configuration file: %s\n", fname);
   if (read_config(fname, setup) ||
       (setup->nsegments = geometry_init(setup)) <= 0) {
     error("Setup of detector geometry failed\n");
@@ -213,11 +213,14 @@ static int make_signal(GRETA_Siggen_Setup *setup, point pt, float **signal, floa
   }
 
   prev_pt = new_pt = pt;
+  // int cf = setup->step_time_out / setup->step_time_calc;
+  // printf("cf = %d\n", cf); fflush(stdout);
   for (t = 0; ((vr = drift_velocity(setup, new_pt, q, &v)) >= 0 && keep_drifting); t++) { 
     if (q > 0) setup->dpath_h[t] = new_pt;
     else setup->dpath_e[t] = new_pt;
     tell(CHATTY, "t: %d  pt: (%.2f %.2f %.2f)\n", t, new_pt.x,new_pt.y, new_pt.z);
     tell(CHATTY, "v: (%e %e %e)\n", v.x, v.y, v.z);
+    // if ((t%cf == 0 || t < 2) && wpotentials(setup, new_pt, wpot) != 0) {
     if (wpotentials(setup, new_pt, wpot) != 0) {
       pt_to_str(tmpstr, MAX_LINE, new_pt);
       tell(NORMAL,

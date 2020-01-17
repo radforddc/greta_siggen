@@ -101,6 +101,7 @@ typedef struct {
   int   max_iterations;       // maximum number of iterations to use in fieldgen
   int   write_field;          // set to 1 to write V and E to output file, 0 otherwise
   int   write_WP;             // set to 1 to calculate WP and write it to output file, 0 otherwise
+  int   fix_adaptive;         // 
 
   // file names
   char geometry_name[256];    // (fixed) asymmetric hexagonal detector geometries for GRETA
@@ -124,20 +125,27 @@ typedef struct {
   int   ntsteps_out;          // number of time steps in output signal
 
   // data for fields.c
-  float xmin, xmax;
-  float ymin, ymax;
+  float xmin, xmax, x0;
+  float ymin, ymax, y0;
   float zmin, zmax;
   int   numx, numy, numz;     // dimensions of efld and wpot arrays
   int   ncontacts, nsegments;
 
+  //for fieldgen:
+  double ***v[2];
+  char   ***point_type;
+  float  ***epsilon;
+  double *impurity_z;
+  float  impurity_lamda, rho_b, rho_c;
+  float  ***dx[2], ***dy[2], ***dz[2];
+
+  //for siggen:
   int   v_lookup_len;
   struct velocity_lookup *v_lookup;
   double *voxel_impurity_z;
-  float  ***v[2];
+  float  ***e;
   vector ***efld;
   float  ****wpot;
-  char   ***point_type;
-  float  impurity_lamda, rho_b, rho_c;
   
   // data for calc_signal.c
   point *dpath_e, *dpath_h;      // electron and hole drift paths
@@ -162,7 +170,7 @@ int read_config(char *config_file_name, GRETA_Siggen_Setup *setup);
 // defined in field_init.c:
 
 int geometry_init(GRETA_Siggen_Setup *setup);     /* returns # contacts */
-enum point_types{OUTSIDE, INSIDE, CONTACT_0, CONTACT_VB};
+enum point_types{OUTSIDE, CONTACT_0, CONTACT_VB, FIXED, INSIDE, CONTACT_EDGE};
 int init_ev_calc(GRETA_Siggen_Setup *setup);
 int init_wp_calc(GRETA_Siggen_Setup *setup, int cnum);
 /* set crystal type. Can be either CRYSTAL_A or CRYSTAL_B

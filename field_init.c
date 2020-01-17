@@ -8,18 +8,42 @@ float fminf(float x, float y);
 
 #include "greta_siggen.h"
 
-static int   in_crystal(GRETA_Siggen_Setup *setup, point pt);
-static int   init_point_fractions(GRETA_Siggen_Setup *setup);
-static float get_fraction(GRETA_Siggen_Setup *setup, int i, int j, int k, int nsteps);
-static int   project_to_edges(GRETA_Siggen_Setup *setup, struct point pt, struct point projections[NCORNERS/2]);
-static int   segment_number(GRETA_Siggen_Setup *setup, point pt);
+static int in_crystal(GRETA_Siggen_Setup *setup, point pt);
+static int project_to_edges(GRETA_Siggen_Setup *setup, struct point pt, struct point projections[NCORNERS/2]);
+static int segment_number(GRETA_Siggen_Setup *setup, point pt);
+static int segment_number_new(GRETA_Siggen_Setup *setup, struct point pt,
+                              float *distance_xy, float *distance_z, int *seg2_xy, int *seg2_z);
 
+
+/* -------------------------------------- dist_from_contact ------------------- */
+float dist_from_contact(point pt, point delta, GRETA_Siggen_Setup *setup) {
+  float  factor = 1, d = 0.5;
+  point test;
+  int    n;
+
+  for (n=0; n<7; n++) {  // 7 steps => 1/128 precision
+    test.x = pt.x + factor * delta.x;
+    test.y = pt.y + factor * delta.y;
+    test.z = pt.z + factor * delta.z;
+    if (!in_crystal(setup, test)) {
+      factor -= d;
+    } else {
+      if (n == 0) return -1.0;
+      factor += d;
+    } 
+    d /= 2.0;
+  }
+  return factor;
+} /* dist_from_contact */
+
+#define SQ(x) ((x)*(x))
 
 int geometry_init(GRETA_Siggen_Setup *setup) {
-  FILE *fp;
-  char line[MAX_LINE], *cp, *next;
-  int i, j, k;
-  struct point pt;
+  FILE  *fp;
+  char  line[MAX_LINE], *cp, *next;
+  int   i, j, k, n;
+  float r, d, grid = setup->xtal_grid, g = grid * 0.05;
+  point pt, tp[6];
 
   if ((fp = fopen(setup->geometry_name, "r")) == NULL) {
     error("Failed to open geometry configuration file: %s\n", setup->geometry_name);
@@ -75,46 +99,144 @@ int geometry_init(GRETA_Siggen_Setup *setup) {
   printf( "Succesfully read %d corner positions\n", N_CRYSTAL_TYPES*2*NCORNERS/2);
   fclose(fp);
 
-  init_point_fractions(setup);
-  return setup->nseg_phi * setup->nseg_z + 1;
-}
+  /* find voxel types : OUTSIDE, CONTACT_0, CONTACT_VB, FIXED, INSIDE, CONTACT_EDGE */
 
-int init_ev_calc(GRETA_Siggen_Setup *setup) {
-  int i, j, k;
-  point pt;
-  float r;
-
+  printf("\n  Initializing points in crystal for x = %.1f to %.1f, grid %.2f...\n",
+         setup->xmin, setup->xmax, grid);
   for (i = 0; i < setup->numx; i++) {
-    pt.x = setup->xmin + i*setup->xtal_grid;
+    printf("\r %d/%d", i, setup->numx-1);
+    pt.x = setup->x0 + i*grid;
+    for (n=0; n<6; n++) tp[n].x = pt.x;
+    tp[0].x -= g; tp[1].x += g;
     for (j = 0; j < setup->numy; j++) {
-      pt.y = setup->ymin + j*setup->xtal_grid;
+      pt.y = setup->y0 + j*grid;
+      for (n=0; n<6; n++) tp[n].y = pt.y;
+      tp[2].y -= g; tp[3].y += g;
       r = sqrt(pt.x*pt.x + pt.y*pt.y);
       for (k = 0; k < setup->numz; k++) {
-	pt.z = setup->zmin + k*setup->xtal_grid;
-	if (setup->point_type[i][j][k] == CONTACT_0) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
-	} else if (setup->point_type[i][j][k] == CONTACT_VB) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV;
-	} else if (setup->point_type[i][j][k]  == OUTSIDE) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
-	} else {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*(setup->xtal_radius - r) /
-            (setup->xtal_radius - setup->core_radius);
-	  if (setup->v[0][i][j][k] >= setup->xtal_HV*0.95) setup->v[0][i][j][k] = setup->xtal_HV*0.95;
-	  if (setup->v[0][i][j][k] <= setup->xtal_HV*0.05) setup->v[0][i][j][k] = setup->xtal_HV*0.05;
+	pt.z = setup->zmin + k*grid;
+        for (n=0; n<6; n++) tp[n].z = pt.z;
+        tp[4].z -= g; tp[5].z += g;
+        setup->point_type[i][j][k] = INSIDE;      // start by assuming voxel is all inside bulk
+
+        /* see if pixel is ouside (or very nearly outside) the detector bulk */
+        if (i == 0 ||
+            !in_crystal(setup, tp[0]) || !in_crystal(setup, tp[1]) ||
+            !in_crystal(setup, tp[2]) || !in_crystal(setup, tp[3]) ||
+            !in_crystal(setup, tp[4]) || !in_crystal(setup, tp[5])) {
+
+	  setup->point_type[i][j][k] = OUTSIDE;   // voxel is all outside
+	  if (pt.z < grid) {            /* front face */
+	    setup->point_type[i][j][k] = CONTACT_0;
+	  } else if (r <= (setup->core_radius + setup->core_offset_max +
+                           setup->bottom_taper_width + grid) &&
+                     k < setup->numz-1) {          /* core contact; see also below for k == setup->numz-1 */
+	    setup->point_type[i][j][k] = CONTACT_VB;
+	  } else if (pt.z >= setup->xtal_length - grid &&
+                     r <= setup->xtal_radius - grid) {     /* passivated surface */
+            setup->point_type[i][j][k] = INSIDE;
+	  } else {                                                     /* outside contact */
+	    setup->point_type[i][j][k] = CONTACT_0;
+	  }
 	}
       }
     }
   }
-  printf("ev ... init done\n"); fflush(stdout);
+
+  // top of central hole should be CONTACT_VB
+  k = setup->numz-1;
+  for (i = 1; i < setup->numx-1; i++) {
+    pt.x = setup->x0 + i*grid;
+    for (j = 1; j < setup->numy-1; j++) {
+      pt.y = setup->y0 + j*grid;
+      r = sqrt(SQ(pt.x - setup->core_offset_x_top) + SQ(pt.y - setup->core_offset_y_top));
+      if (r <= setup->core_radius + setup->bottom_taper_width) setup->point_type[i][j][k] = CONTACT_VB;
+    }
+  }
+
+  /* find the pixels next to the contact surfaces */
+  for (n=0; n<6; n++) tp[n].x = tp[n].y = tp[n].y = 0;
+  tp[0].x = grid; tp[1].x = -grid;
+  tp[2].y = grid; tp[3].y = -grid;
+  tp[4].z = grid; tp[5].z = -grid;
+  for (i = 1; i < setup->numx-1; i++) {
+    printf("\r %d/%d", i, setup->numx-1);fflush(stdout);
+    pt.x = setup->x0 + i*grid;
+    for (j = 1; j < setup->numy-1; j++) {
+      pt.y = setup->y0 + j*grid;
+      for (k = 1; k < setup->numz; k++) {
+	pt.z = setup->zmin + k*grid;
+        setup->dx[0][i][j][k] = setup->dx[1][i][j][k] = 1.0;
+        setup->dy[0][i][j][k] = setup->dy[1][i][j][k] = 1.0;
+        setup->dz[0][i][j][k] = setup->dz[1][i][j][k] = 1.0;
+
+        if (setup->point_type[i][j][k] == INSIDE &&
+            (setup->point_type[i+1][j][k] < INSIDE || setup->point_type[i-1][j][k] < INSIDE ||
+             setup->point_type[i][j+1][k] < INSIDE || setup->point_type[i][j-1][k] < INSIDE ||
+             (k < setup->numz-1 && setup->point_type[i][j][k+1] < INSIDE) ||
+             setup->point_type[i][j][k-1] < INSIDE )) {
+          setup->point_type[i][j][k] = CONTACT_EDGE;
+          /* find distance to contact surface */
+          if (setup->point_type[i+1][j][k] < INSIDE && (d = dist_from_contact(pt, tp[0], setup)) > 0)
+            setup->dx[1][i][j][k] = 1.0/d;
+          if (setup->point_type[i-1][j][k] < INSIDE && (d = dist_from_contact(pt, tp[1], setup)) > 0)
+            setup->dx[0][i][j][k] = 1.0/d;
+          if (setup->point_type[i][j+1][k] < INSIDE && (d = dist_from_contact(pt, tp[2], setup)) > 0)
+            setup->dy[1][i][j][k] = 1.0/d;
+          if (setup->point_type[i][j-1][k] < INSIDE && (d = dist_from_contact(pt, tp[3], setup)) > 0)
+            setup->dy[0][i][j][k] = 1.0/d;
+          if (k < setup->numz-1 &&
+              setup->point_type[i][j][k+1] < INSIDE && (d = dist_from_contact(pt, tp[4], setup)) > 0)
+            setup->dz[1][i][j][k] = 1.0/d;
+          if (setup->point_type[i][j][k-1] < INSIDE && (d = dist_from_contact(pt, tp[5], setup)) > 0)
+            setup->dz[0][i][j][k] = 1.0/d;
+        }
+      }
+    }
+  }
+
+  printf("\n");
+  return setup->nseg_phi * setup->nseg_z + 1;
+}
+
+int init_ev_calc(GRETA_Siggen_Setup *setup) {
+  int   i, j, k;
+  float x, y, r;
+
+  for (i = 0; i < setup->numx; i++) {
+    x = setup->x0 + i*setup->xtal_grid;
+    for (j = 0; j < setup->numy; j++) {
+      y = setup->y0 + j*setup->xtal_grid;
+      r = sqrt(x*x + y*y);
+      for (k = 0; k < setup->numz; k++) {
+        setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV/5.0;
+	if (setup->point_type[i][j][k] == CONTACT_0) {
+	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	} else if (setup->point_type[i][j][k] == CONTACT_VB) {
+	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV;
+	} else if (setup->point_type[i][j][k] == OUTSIDE) {
+	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	} else {
+	  //setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*(setup->xtal_radius - r) /
+          //  (Setup->xtal_radius - setup->core_radius);
+	  if (setup->v[0][i][j][k] >= setup->xtal_HV*0.95) setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*0.95;
+	  if (setup->v[0][i][j][k] <= setup->xtal_HV*0.05) setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*0.05;
+	}
+      }
+    }
+  }
+  printf("ev ... init done\n");
   return 0;
 
 }
 
-int init_wp_calc(GRETA_Siggen_Setup *setup, int cnum) {
+#define HSG 0.25  // half of segmentation boundary gap (mm)
+
+ int init_wp_calc(GRETA_Siggen_Setup *setup, int cnum) {
   int i, j, k;
   point pt;
-  float r;
+  int   seg, seg2xy, seg2z;
+  float dxy, dz;
 
   for (i = 0; i < setup->numx; i++) {
     for (j = 0; j < setup->numy; j++) {
@@ -125,38 +247,124 @@ int init_wp_calc(GRETA_Siggen_Setup *setup, int cnum) {
   }
 
   for (i = 0; i < setup->numx; i++) {
-    pt.x = setup->xmin + i*setup->xtal_grid;
+    pt.x = setup->x0 + i*setup->xtal_grid;
     for (j = 0; j < setup->numy; j++) {
-      pt.y = setup->ymin + j*setup->xtal_grid;
-      r = sqrt(pt.x*pt.x + pt.y*pt.y);
+      pt.y = setup->y0 + j*setup->xtal_grid;
       for (k = 0; k < setup->numz; k++) {
 	pt.z = setup->zmin + k*setup->xtal_grid;
 	if (setup->point_type[i][j][k] == CONTACT_VB) {
-	  if (cnum == setup->nseg_z*setup->nseg_phi)
-	    setup->v[0][i][j][k] = setup->v[1][i][j][k] = 1.0;
-	  else
-	    setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	  if (cnum == setup->nseg_z*setup->nseg_phi) setup->v[1][i][j][k] = 1.0;
+	  else setup->v[1][i][j][k] = 0.0;
 	} else if (setup->point_type[i][j][k] == CONTACT_0) {
 	  if (cnum < setup->nseg_z*setup->nseg_phi) {
-	    if (segment_number(setup, pt) == cnum)
-	      setup->v[0][i][j][k] = setup->v[1][i][j][k] = 1.0;
+	    // if (segment_number(setup, pt) == cnum) setup->v[1][i][j][k] = 1.0;
+	    if ((seg = segment_number_new(setup, pt, &dxy, &dz, &seg2xy, &seg2z)) == cnum) {
+	      setup->v[1][i][j][k] = 1.0;
+              if (dxy < HSG) setup->v[1][i][j][k]  = 0.5 * (1.0 + dxy/HSG);
+              if (dz  < HSG) setup->v[1][i][j][k] *= 0.5 * (1.0 + dz/HSG);
+            } else if (seg2xy == cnum && dxy < HSG) {
+              setup->v[1][i][j][k] = 0.5 * (1.0 - dxy/HSG);
+            } else if (seg2z == cnum && dz < HSG) {
+              setup->v[1][i][j][k] = 0.5 * (1.0 - dz/HSG);
+            }
+            if (cnum < 6 && fabs(pt.x) < HSG/2.0 && fabs(pt.y) < HSG/2.0)
+              setup->v[1][i][j][k] = 0.167;
+            else if (cnum < 6 && fabs(pt.x) < HSG*2.0 && fabs(pt.y) < HSG*2.0)
+              setup->v[1][i][j][k] *= 0.33*(1.0 + sqrt(pt.x*pt.x + pt.y*pt.y)/HSG);
+            // if (cnum < 6 && fabs(pt.x) < 4.1 && fabs(pt.y) < 4.1 && setup->v[1][i][j][k] > 0)
+            //   printf("x, y = %5.2f %5.2f ; WP, dxy =  %5.2f %5.2f\n", pt.x, pt.y, setup->v[1][i][j][k], dxy);
 	  } else {
-	    setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	    setup->v[1][i][j][k] = 0.0;
 	  }
 	} else if (setup->point_type[i][j][k]  == OUTSIDE) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	  setup->v[1][i][j][k] = 0.0;
 	} else {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.5;
+	  setup->v[1][i][j][k] = 0.5;
 	}
+        setup->v[0][i][j][k] = setup->v[1][i][j][k];
       }
     }
   }
-  printf("wp ... init done\n"); fflush(stdout);
+  printf("wp ... init done\n");
   return 0;
-
-
 }
 
+
+/* segment_number_new()
+   returns segment number
+   seg2* = nearest neighbor segment in xy or z direction
+   distance* = distance of projected point from center of nearest segment boundary in xy or z direction */
+static int segment_number_new(GRETA_Siggen_Setup *setup, struct point pt,
+                              float *distance_xy, float *distance_z, int *seg2_xy, int *seg2_z) {
+  int i, seg = -1, segz, segz2;
+  struct point c1, c2, corners[NCORNERS/2];
+  float a, b, d;
+
+  if (fabsf(pt.x) < 0.001 && fabsf(pt.y) < 0.001) return -1;
+
+  /* find segment number in z direction */
+  for (segz = 0; segz < setup->nseg_z; segz++)
+    if (pt.z <= setup->zmax_segment[segz]) break;
+  if (segz >= setup->nseg_z) return -1;
+
+  /* find nearest-neighbor segz and distance to middle of z-segment line */
+  if (segz == 0) {
+    segz2 = segz + 1;
+    *distance_z = setup->zmax_segment[segz] - pt.z;
+  } else if (segz == setup->nseg_z-1) {
+    segz2 = segz - 1;
+    *distance_z = pt.z - setup->zmax_segment[segz - 1];
+  } else {
+    if (setup->zmax_segment[segz] - pt.z < pt.z - setup->zmax_segment[segz - 1]) {
+      segz2 = segz + 1;
+      *distance_z = setup->zmax_segment[segz] - pt.z;
+    } else {
+      segz2 = segz - 1;
+      *distance_z = pt.z - setup->zmax_segment[segz - 1];
+    }
+  }
+
+  project_to_edges(setup, pt, corners);
+  for (i = 0; i < NCORNERS/2; i++) {
+    // identify two corners c1, c2
+    c1 = corners[i];
+    if (i<5) c2 = corners[i+1];
+    else c2 = corners[0];
+
+    if (fabsf(pt.x) < 0.001) {
+      if (fabsf(c1.x - c2.x) < 0.1) continue;
+      b = c1.x / (c1.x - c2.x);
+      a = (c1.y + b*(c2.y - c1.y)) / pt.y;
+    } else {
+      b = (c1.x*pt.y - c1.y*pt.x) / (pt.x*(c2.y - c1.y) - pt.y*(c2.x - c1.x));
+      a = (c1.x + b*(c2.x - c1.x)) / pt.x;
+    }
+    if (b < 0 || b > 1 || a < 0) continue; // projected point does not intersect line between corners
+    d = sqrt((c2.y - c1.y)*(c2.y - c1.y) + (c2.x - c1.x)*(c2.x - c1.x));
+    if (b < 0.5) {
+      seg = i;
+      *seg2_xy = i+1;
+      if (i == 5) *seg2_xy = 0;
+      *distance_xy = (0.5 - b) * d;
+    } else {
+      *seg2_xy = i;
+      seg = i+1;
+      if (i == 5) seg = 0;
+      *distance_xy = (b - 0.5) * d;
+    }
+    // projection.x = a*pt.x; projection.y = a*pt.x; projection.z = pt.z;
+    // if (pt.z < 0.01 && a > 1.0)
+    *distance_xy /= a; // scale distance from segment boundary
+    /* if a < 1 then pt is outside detector */
+
+    *seg2_xy = (*seg2_xy + 4) % 6 + 6 * segz;
+    *seg2_z  = (seg + 4) % 6 + 6 * segz2;
+    seg      = (seg + 4) % 6 + 6 * segz;
+    return seg;
+  }
+  printf("segment_number_new error: x y z %5.2f %5.2f %5.2f -> no solution\n", pt.x, pt.y, pt.z);
+  return -1;
+}
 
 /* segment_number
    returns the (geometrical) segment number at point pt, or -1 
@@ -174,14 +382,14 @@ static int segment_number(GRETA_Siggen_Setup *setup, point pt) {
   xyvect.z = 0.0;
   project_to_edges(setup, pt, edge_p);
   seg_z = 0;
-  /*find segment number in z direction*/
+  /* find segment number in z direction */
   for (i = 0; i < setup->nseg_z; i++) {
     if (pt.z <= setup->zmax_segment[i]) {
       seg_z = i;
       break;
     }
   }
-  /*find segment number in phi direction*/
+  /* find segment number in phi direction */
   thp = thn = M_PI;
   side_pxy.z = 0;
   seg_phi = seg_phi_p = seg_phi_n = 0;
@@ -218,135 +426,6 @@ static int segment_number(GRETA_Siggen_Setup *setup, point pt) {
   
   return setup->nseg_phi*seg_z + seg_phi;
 }
-
-#define SQ(x) ((x)*(x))
-
-static int init_point_fractions(GRETA_Siggen_Setup *setup) {
-  int i, j, k;
-  point pt;
-  float r, f, r2;
-
-  printf("\n  Initializing points in crystal for x = %.1f to %.1f, grid %.2f...\n",
-         setup->xmin, setup->xmax, setup->xtal_grid);
-  for (i = 0; i < setup->numx; i++) {
-    printf("\r %d/%d", i, setup->numx-1);fflush(stdout);
-    pt.x = setup->xmin + i*setup->xtal_grid;
-    for (j = 0; j < setup->numy; j++) {
-      pt.y = setup->ymin + j*setup->xtal_grid;
-      for (k = 0; k < setup->numz; k++) {
-	pt.z = setup->zmin + k*setup->xtal_grid;
-	f = get_fraction(setup, i, j, k, 3);
-	if (f == 1.0) {                           // voxel is all inside bulk
-	  setup->point_type[i][j][k] = INSIDE;
-	} else if (f == 0.0) {                    // voxel is all outside
-	  setup->point_type[i][j][k] = OUTSIDE;
-	} else {                                  // voxel is on a boundary
-	  r = sqrt(pt.x*pt.x + pt.y*pt.y);
-	  if (pt.z < setup->xtal_grid) {            /* front face */
-	    setup->point_type[i][j][k] = CONTACT_0;
-	  } else if (r <= (setup->core_radius + setup->core_offset_max +
-                           setup->bottom_taper_width + setup->xtal_grid) &&
-                     k < setup->numz-1) {          /* core contact; see also below for k == setup->numz-1 */
-	    setup->point_type[i][j][k] = CONTACT_VB;
-	  } else if (pt.z >= setup->xtal_length - setup->xtal_grid &&
-                     r <= setup->xtal_radius - setup->xtal_grid) {     /* passivated surface */
-            setup->point_type[i][j][k] = INSIDE;
-	  } else {                                                     /* outside contact */
-	    setup->point_type[i][j][k] = CONTACT_0;
-	  }
-	}
-      }
-    }
-  }
-  for (i = 1; i < setup->numx-1; i++) {
-    pt.x = setup->xmin + i*setup->xtal_grid;
-    for (j = 1; j < setup->numy-1; j++) {
-      pt.y = setup->ymin + j*setup->xtal_grid;
-      k = setup->numz-1;
-      /* top of central hole should be CONTACT_VB */
-      r = sqrt(SQ(pt.x - setup->core_offset_x_top) + SQ(pt.y - setup->core_offset_y_top));
-      r2 = setup->core_radius + setup->bottom_taper_width;
-      if (r  < r2) setup->point_type[i][j][k] = OUTSIDE;
-      if (r <= r2 && r + setup->xtal_grid > r2) setup->point_type[i][j][k] = CONTACT_VB;
-      if (0 && setup->point_type[i][j][k] == CONTACT_VB)
-        printf(" >> top of core:  %3d %3d %3d, %5.2f %5.2f %5.2f\n", i, j, k,
-               setup->xmin + i*setup->xtal_grid,
-               setup->ymin + j*setup->xtal_grid,
-               setup->zmin + k*setup->xtal_grid);
-
-      for (k = 1; k < setup->numz-1; k++) {
-	if (setup->point_type[i][j][k] != INSIDE) continue;
-	if ((i < setup->numx/2 && setup->point_type[i-1][j][k] == OUTSIDE) ||
-            (i > setup->numx/2 && setup->point_type[i+1][j][k] == OUTSIDE) ||
-            (j < setup->numy/2 && setup->point_type[i][j-1][k] == OUTSIDE) ||
-            (j > setup->numy/2 && setup->point_type[i][j+1][k] == OUTSIDE)) {
-	  setup->point_type[i][j+1][k] = CONTACT_0;
-	}
-      }
-    }
-  }
-
-  printf("\n");
-  return 0;
-}
-
-static float get_fraction(GRETA_Siggen_Setup *setup, int i, int j, int k, int nsteps) {
-  int ii, jj, kk;
-  point pt;
-  int n, m;
-
-  // first try all eight corners of voxel to see if they are inside the detector
-  n = m = 0;
-  for (ii = 0; ii < 2; ii++) {
-    pt.x = setup->xmin + (i + ii - 0.5)*setup->xtal_grid;
-    if (pt.x < setup->xmin || pt.x > setup->xmax) {
-      n += 4;
-      continue;
-    }
-    for (jj = 0; jj < 2; jj++) {
-      pt.y = setup->ymin + (j + jj - 0.5)*setup->xtal_grid;
-      if (pt.y < setup->ymin || pt.y > setup->ymax) {
-	n += 2;
-	continue;
-      }
-      for (kk = 0; kk < 2; kk++) {
-        n++;
-	pt.z = setup->zmin + (k + kk - 0.5)*setup->xtal_grid;
-	if (pt.z < setup->zmin || pt.z > setup->zmax) continue;
-	if (in_crystal(setup, pt)) m++;
-      }
-    }
-  }
-  if (m == 0) return 0.0;  // all are outside
-  if (m == n) return 1.0;  // all are inside
-
-  /*
-  // no definitive answer, so use (nsteps+1)^3 smaller fractions of the voxel
-  n = m = 0;
-  for (ii = -nsteps; ii <= nsteps; ii++) {
-    pt.x = setup->xmin + (i + ii/2.0/nsteps)*setup->xtal_grid;
-    if (pt.x < setup->xmin || pt.x > setup->xmax) {
-      n += (2*nsteps+1) * (2*nsteps+1);
-      continue;
-    }
-    for (jj = -nsteps; jj <=nsteps; jj++) {
-      pt.y = setup->ymin + (j + jj/2.0/nsteps)*setup->xtal_grid;
-      if (pt.y < setup->ymin || pt.y > setup->ymax) {
-	n += 2*nsteps+1;
-	continue;
-      }
-      for (kk = -nsteps; kk <= nsteps; kk++) {
-        n++;
-	pt.z = setup->zmin + (k + kk/2.0/nsteps)*setup->xtal_grid;
-	if (pt.z < setup->zmin || pt.z > setup->zmax) continue;
-	if (in_crystal(setup, pt)) m++;
-      }
-    }
-  }
-  */
-  return ((float) m) / ((float) n);
-}
-
 
 /* returns 0 (false) or 1 (true) depending on whether pt is inside the crystal */
 static int in_crystal(GRETA_Siggen_Setup *setup, point pt) {
