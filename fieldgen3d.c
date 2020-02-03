@@ -182,13 +182,15 @@ static int grid_init(GRETA_Siggen_Setup *setup) {
 
 int do_relaxation(GRETA_Siggen_Setup *setup, int efld_calc) {
   int    i, j, k, *ylo, *yhi, **zlo;
-  int    old, new, iter, undep;
-  double sum_dif, max_dif, dif, save_dif, mean;
-  double ****v = setup->v;
+  int    iter, undep;
+  double sum_dif, max_dif, dif, mean, vsave;
+  double ***v = setup->v;
   float  z, ****dx = setup->dx, ****dy = setup->dy, ****dz = setup->dz;
-  double OR_fact, d1, d2;
+  double OR_fact;
   int    L  = lrint(setup->xtal_length/setup->xtal_grid);
   int    R  = lrint(setup->xtal_radius/setup->xtal_grid);
+  double g2 = pow(setup->xtal_grid/0.5, 2.0);
+  double g3 = pow(setup->xtal_grid/0.5, 3.0);
 
 
   if ((ylo = malloc(setup->numx*sizeof(*ylo))) == NULL ||
@@ -205,7 +207,6 @@ int do_relaxation(GRETA_Siggen_Setup *setup, int efld_calc) {
   }
   printf("grid, L, R = %f %d %d\n", setup->xtal_grid, L, R);
 
-  old = 1; new = 0;
   for (i = 0; i < setup->numx; i++) {
     ylo[i] = setup->numy-1;
     yhi[i] = 1;
@@ -230,9 +231,7 @@ int do_relaxation(GRETA_Siggen_Setup *setup, int efld_calc) {
 	}
       }
     }
-    //printf("i, ylo[i], yhi[i] = %3d %3d %3d\n", i, ylo[i], yhi[i]); fflush(stdout);
   }
-  //printf("grid, L, R = %f %d %d\n", setup->xtal_grid, L, R); fflush(stdout);
 
   /* calculate voxel impurity value as a function of z */
   for (k = 0; k < setup->numz; k++) {
@@ -254,64 +253,51 @@ int do_relaxation(GRETA_Siggen_Setup *setup, int efld_calc) {
   printf("starting relaxation...\n");
   for (iter = 0; iter < setup->max_iterations; iter++) {
 
-#define OVER_RELAX_F2   (efld_calc ? (0.88 + 0.02/setup->xtal_grid) : (0.88 + 0.02/setup->xtal_grid))
-
     if (efld_calc) {
-      OR_fact = (0.964  - 236.0/(L*R)) * (1.0 - 3.0/(5.0+iter));
-      // OR_fact = OVER_RELAX_F2;
-      d1 = 0.6;
+      OR_fact = 1.991 - 3.6/R;  // optimized using geometry for GRETA crystals, 0.5 and 0.25 mm grid
     } else {
-      OR_fact = (0.983 - 200.0/(L*R)) * (1.0 - 3.0/(5.0+iter));
-      d1 = 0.1;
+      OR_fact = 1.996 - 4.8/R;
     }
-    if (240.0/(L*R) > 0.5) OR_fact = (0.5 * (1.0 - 0.5/(double)(1+iter/6)));
+    if (iter == 0) printf("OR factor: %f\n", OR_fact);
     if (iter < 3)  OR_fact = 0;
 
-    d2 = 1.0 - d1;
-    old = 1 - old;
-    new = 1 - new;
     sum_dif = 0.0;
     max_dif = 0.0;
 
     /* do relaxation iteration */
     i = j = setup->numx/2;
     for (i = 1; i < setup->numx-1; i++) {
-      for (j = 1; j < setup->numy-1; j++) {
-      //for (j = ylo[i]; j <= yhi[i]; j++) {
+      for (j = ylo[i]; j <= yhi[i]; j++) {
         /* set up reflection symmetry around z=numz-1 (passivated surface) */
-        v[old][i][j][setup->numz] = v[old][i][j][setup->numz-2];
-        for (k = 1; k < setup->numz; k++) {
-        //for (k = zlo[i][j]; k < setup->numz; k++) {
+        v[i][j][setup->numz] = v[i][j][setup->numz-2];
+        for (k = zlo[i][j]; k < setup->numz; k++) {
 	  if (setup->point_type[i][j][k] < INSIDE) continue;
-          // save step difference from previous iteration
-          save_dif = v[old][i][j][k] - v[new][i][j][k];
-          setup->e[i][j][k] = d1*setup->e[i][j][k] + d2*save_dif;
+          vsave = v[i][j][k];
 
           if (setup->point_type[i][j][k] == INSIDE) {
-            mean = (v[old][i-1][j][k] + v[old][i+1][j][k] +
-                    v[old][i][j-1][k] + v[old][i][j+1][k] +
-                    v[old][i][j][k-1] + v[old][i][j][k+1])/6.0;
+            mean = (v[i-1][j][k] + v[i+1][j][k] +
+                    v[i][j-1][k] + v[i][j+1][k] +
+                    v[i][j][k-1] + v[i][j][k+1])/6.0;
           } else {
-            mean = (v[old][i-1][j][k] * dx[0][i][j][k] +
-                    v[old][i+1][j][k] * dx[1][i][j][k] +
-                    v[old][i][j-1][k] * dy[0][i][j][k] +
-                    v[old][i][j+1][k] * dy[1][i][j][k] +
-                    v[old][i][j][k-1] * dz[0][i][j][k] +
-                    v[old][i][j][k+1] * dz[1][i][j][k]) /
+            mean = (v[i-1][j][k] * dx[0][i][j][k] +
+                    v[i+1][j][k] * dx[1][i][j][k] +
+                    v[i][j-1][k] * dy[0][i][j][k] +
+                    v[i][j+1][k] * dy[1][i][j][k] +
+                    v[i][j][k-1] * dz[0][i][j][k] +
+                    v[i][j][k+1] * dz[1][i][j][k]) /
               (double) (dx[0][i][j][k] + dx[1][i][j][k] +
                         dy[0][i][j][k] + dy[1][i][j][k] +
                         dz[0][i][j][k] + dz[1][i][j][k]);
           }
 
           if (efld_calc) {
-            v[new][i][j][k] = mean;// + setup->voxel_impurity_z[k];
+            v[i][j][k] = mean + setup->voxel_impurity_z[k];
           } else {
-            v[new][i][j][k] = mean;
+            v[i][j][k] = mean;
           }
-	  dif = v[old][i][j][k] - v[new][i][j][k];
- 
-          //v[new][i][j][k] += OR_fact * save_dif;
-          v[new][i][j][k] += OR_fact * setup->e[i][j][k];   // do over-relaxation
+	  dif = v[i][j][k] - vsave;
+          if (setup->point_type[i][j][k] == INSIDE)  // over-relaxation at the boundaries slows down convergence
+            v[i][j][k] = vsave + OR_fact * dif;      // do over-relaxation
 
 	  if (dif < 0.0) dif = -dif;
 	  sum_dif += dif;
@@ -328,29 +314,35 @@ int do_relaxation(GRETA_Siggen_Setup *setup, int efld_calc) {
     if (max_dif < 1.0e-8) break;
 
     if (efld_calc) {
-      //if (max_dif/setup->xtal_HV < 1.0e-3/5000.0 &&
-      //    sum_dif/setup->xtal_HV < 6.0e-5/5000.0) break;
-      if (max_dif/setup->xtal_HV < 2.0e-3/5000.0 &&
-          sum_dif/setup->xtal_HV < 3.0e-4/5000.0) break;
-   } else {
-      if (max_dif < 5.0e-7 &&
-          sum_dif < 1.0e-7) break;
+      //if (iter == 0) printf("conv limits: %.4e %.4e\n", 6.0e-5 * g3 * setup->xtal_HV, 2.0e-6 * g3 * setup->xtal_HV);
+      if (max_dif/setup->xtal_HV < 8.0e-6 * g2 / 5000.0 &&
+          sum_dif/setup->xtal_HV < 3.0e-7 * g2 / 5000.0) break;
+      if (1 &&                                                  // change 1 to 0 for complete convergence to numerical limit
+          max_dif/setup->xtal_HV < 8.0e-2 * g2 / 5000.0 &&      // factor of grid^2 gives uniform overall error in E
+          sum_dif/setup->xtal_HV < 3.0e-3 * g2 / 5000.0) break;
+    } else {
+      //if (iter == 0) printf("conv limits: %.4e %.4e\n", 6.0e-5 * g3, 2.0e-6 * g3);
+      if (max_dif < 6.0e-5 * g3 &&                              // factor of grid^3 should give uniform overall error in WP
+          sum_dif < 2.0e-6 * g3) break;
     }
   }
   printf("%5d %.3e %.3e\n", 
 	 iter, max_dif, sum_dif);
 
   undep = 0;
-  for (i = 0; i < setup->numx && !undep; i++) {
-    for (j = 0; j < setup->numy && !undep; j++) {
-      for (k = 0; k < setup->numz && !undep; k++) {
-	if (v[new][i][j][k] > setup->xtal_HV) {
-	  printf("detector is undepleted!\n");
-	  undep = 1;
-	}
+  float maxv = 0;
+  for (i = 1; i < setup->numx-1; i++) {
+    for (j = 1; j < setup->numy-1; j++) {
+      for (k = 1; k < setup->numz; k++) {
+        if (v[i][j][k] > maxv) maxv = v[i][j][k];
       }
     }
   }
+  if (maxv > 1.001 * setup->xtal_HV) {
+    printf(" Detector is undepleted! %f\n", maxv);
+    undep = 1;
+  }
+
   printf("...  relaxation done\n");
   for (i = 0; i < setup->numx; i++) free(zlo[i]);
   free(ylo); free(yhi); free(zlo);
@@ -362,7 +354,7 @@ static int v_interpolate(GRETA_Siggen_Setup *setup, GRETA_Siggen_Setup *old_setu
   int   i, j, k, n, i2, j2, k2;
   int   xmin, xmax, ymin, ymax, zmin, zmax;
   float f, fx, fy, fz;
-  double ***ov = old_setup->v[1];
+  double ***ov = old_setup->v;
 
   /* the previous calculation was on a coarser grid...
      now copy/expand the potential to the new finer grid
@@ -391,7 +383,7 @@ static int v_interpolate(GRETA_Siggen_Setup *setup, GRETA_Siggen_Setup *old_setu
             fz = 1.0;
             for (k2 = zmin; k2 < zmax; k2++) {
               if (setup->point_type[i2][j2][k2] >= INSIDE)
-                setup->v[0][i2][j2][k2] = setup->v[1][i2][j2][k2] =
+                setup->v[i2][j2][k2] = setup->v[i2][j2][k2] =
                   fx       * fy       * fz       * ov[i  ][j  ][k  ] +
                   (1.0-fx) * fy       * fz       * ov[i+1][j  ][k  ] +
                   fx       * (1.0-fy) * fz       * ov[i  ][j+1][k  ] +
@@ -418,7 +410,8 @@ static int v_interpolate(GRETA_Siggen_Setup *setup, GRETA_Siggen_Setup *old_setu
 
 static int ev_calc(GRETA_Siggen_Setup *setup, GRETA_Siggen_Setup *old_setup) {
 
-  if (!old_setup) printf("\n\n ---- starting EV calculation --- \n");
+  if (!old_setup)
+    printf("\n\n ---- starting EV calculation --- \n");
   init_ev_calc(setup);
   if (old_setup) v_interpolate(setup, old_setup);
   do_relaxation(setup, 1);
@@ -436,6 +429,7 @@ static int wp_calc(GRETA_Siggen_Setup *setup, GRETA_Siggen_Setup *old_setup, int
     printf("\n\n ---- starting WP calculation for contact number %d --- \n", cnum);
   init_wp_calc(setup, cnum);
   if (old_setup) v_interpolate(setup, old_setup);
+
   do_relaxation(setup, 0);
   if (setup->write_WP) {
     snprintf(str, 256, "-seg%2.2d", cnum);
@@ -468,7 +462,7 @@ int write_ev(GRETA_Siggen_Setup *setup, char *fname) {
   FILE   *fp = NULL, *fp2 = NULL;
   struct efld{float x; float y; float z;} ***e;
   float  grid = setup->xtal_grid;
-  double ***v = setup->v[0];
+  double ***v = setup->v;
 
 
   if ((fp = fopen(fname, "w")) == NULL) {
@@ -545,85 +539,7 @@ int write_ev(GRETA_Siggen_Setup *setup, char *fname) {
       }
     }
   }
-  /*
-  // calculate field AT the contact surfaces
-  for (i = 1; i < setup->numx-1; i++) {
-    for (j = 1; j < setup->numy-1; j++) {
-      for (k = 1; k < setup->numz; k++) {
-        if (setup->point_type[i][j][k] != CONTACT_0 &&
-            setup->point_type[i][j][k] != CONTACT_VB) continue;
 
-        if (setup->point_type[i+1][j][k] == CONTACT_EDGE)
-          e[i][j][k].x = 10.0*(v[i][j][k] - v[i+1][j][k])*setup->dx[0][i+1][j][k]/grid;
-        if (setup->point_type[i-1][j][k] == CONTACT_EDGE)
-          e[i][j][k].x = 10.0*(v[i-1][j][k] - v[i][j][k])*setup->dx[1][i-1][j][k]/grid;
- 
-        if (setup->point_type[i][j+1][k] == CONTACT_EDGE)
-          e[i][j][k].y = 10.0*(v[i][j][k] - v[i][j+1][k])*setup->dy[0][i][j+1][k]/grid;
-        if (setup->point_type[i][j-1][k] == CONTACT_EDGE)
-          e[i][j][k].y = 10.0*(v[i][j-1][k] - v[i][j][k])*setup->dy[1][i][j-1][k]/grid;
-
-        if (setup->point_type[i][j][k+1] == CONTACT_EDGE)
-          e[i][j][k].z = 10.0*(v[i][j][k] - v[i][j][k+1])*setup->dz[0][i][j][k+1]/grid;
-        if (setup->point_type[i][j][k-1] == CONTACT_EDGE)
-          e[i][j][k].z = 10.0*(v[i][j][k-1] - v[i][j][k])*setup->dz[1][i][j][k-1]/grid;
-      }
-    }
-  }
-  */
-  /*
-  // calculate field AT the contact surfaces by extrapolation
-  for (i = 1; i < setup->numx-1; i++) {
-    for (j = 1; j < setup->numy-1; j++) {
-      for (k = 1; k < setup->numz; k++) {
-        if (setup->point_type[i][j][k] != CONTACT_0 &&
-            setup->point_type[i][j][k] != CONTACT_VB) continue;
-        float f = 0;
-        
-        if (setup->point_type[i+1][j][k] == CONTACT_EDGE) {
-          e[i][j][k].x += 2.0*e[i+1][j][k].x - e[i+2][j][k].x;
-          e[i][j][k].y += 2.0*e[i+1][j][k].y - e[i+2][j][k].y;
-          e[i][j][k].z += 2.0*e[i+1][j][k].z - e[i+2][j][k].z;
-          f++;
-        } else if (setup->point_type[i-1][j][k] == CONTACT_EDGE) {
-          e[i][j][k].x += 2.0*e[i-1][j][k].x - e[i-2][j][k].x;
-          e[i][j][k].y += 2.0*e[i-1][j][k].y - e[i-2][j][k].y;
-          e[i][j][k].z += 2.0*e[i-1][j][k].z - e[i-2][j][k].z;
-          f++;
-        }
-
-        if (setup->point_type[i][j+1][k] == CONTACT_EDGE) {
-          e[i][j][k].x += 2.0*e[i][j+1][k].x - e[i][j+2][k].x;
-          e[i][j][k].y += 2.0*e[i][j+1][k].y - e[i][j+2][k].y;
-          e[i][j][k].z += 2.0*e[i][j+1][k].z - e[i][j+2][k].z;
-          f++;
-        } else if (setup->point_type[i][j-1][k] == CONTACT_EDGE) {
-          e[i][j][k].x += 2.0*e[i][j-1][k].x - e[i][j-2][k].x;
-          e[i][j][k].y += 2.0*e[i][j-1][k].y - e[i][j-2][k].y;
-          e[i][j][k].z += 2.0*e[i][j-1][k].z - e[i][j-2][k].z;
-          f++;
-        }
-
-        if (setup->point_type[i][j][k+1] == CONTACT_EDGE) {
-          e[i][j][k].x += 2.0*e[i][j][k+1].x - e[i][j][k+2].x;
-          e[i][j][k].y += 2.0*e[i][j][k+1].y - e[i][j][k+2].y;
-          e[i][j][k].z += 2.0*e[i][j][k+1].z - e[i][j][k+2].z;
-          f++;
-        } else if (setup->point_type[i][j][k-1] == CONTACT_EDGE) {
-          e[i][j][k].x += 2.0*e[i][j][k-1].x - e[i][j][k-2].x;
-          e[i][j][k].y += 2.0*e[i][j][k-1].y - e[i][j][k-2].y;
-          e[i][j][k].z += 2.0*e[i][j][k-1].z - e[i][j][k-2].z;
-          f++;
-        }
-        if (f > 1.0) {
-          e[i][j][k].x /= f;
-          e[i][j][k].y /= f;
-          e[i][j][k].z /= f;
-        }
-      }
-    }
-  }
-  */
   // calculate field AT the contact surfaces: take mean of neighbors
   for (i = 1; i < setup->numx-1; i++) {
     for (j = 1; j < setup->numy-1; j++) {
@@ -675,58 +591,6 @@ int write_ev(GRETA_Siggen_Setup *setup, char *fname) {
       }
     }
   }
-  /*
-  // calculate field AT the contact surfaces: take field from nearest bulk point
-  for (i = 1; i < setup->numx-1; i++) {
-    for (j = 1; j < setup->numy-1; j++) {
-      for (k = 1; k < setup->numz; k++) {
-        if (setup->point_type[i][j][k] != CONTACT_0 &&
-            setup->point_type[i][j][k] != CONTACT_VB) continue;
-        float d = 0.5/grid;
-        
-        if (setup->point_type[i+1][j][k] == CONTACT_EDGE) {
-          e[i][j][k].x = e[i+1][j][k].x;
-          e[i][j][k].y = e[i+1][j][k].y;
-          e[i][j][k].z = e[i+1][j][k].z;
-          d = setup->dx[0][i+1][j][k];
-        } else if (setup->point_type[i-1][j][k] == CONTACT_EDGE) {
-          e[i][j][k].x = e[i-1][j][k].x;
-          e[i][j][k].y = e[i-1][j][k].y;
-          e[i][j][k].z = e[i-1][j][k].z;
-          d = setup->dx[1][i-1][j][k];
-        }
-
-        if (setup->point_type[i][j+1][k] == CONTACT_EDGE &&
-            d < setup->dy[0][i][j+1][k]) {
-          e[i][j][k].x = e[i][j+1][k].x;
-          e[i][j][k].y = e[i][j+1][k].y;
-          e[i][j][k].z = e[i][j+1][k].z;
-          d = setup->dy[0][i][j+1][k];
-        } else if (setup->point_type[i][j-1][k] == CONTACT_EDGE &&
-                   d < setup->dy[1][i][j-1][k]) {
-          e[i][j][k].x = e[i][j-1][k].x;
-          e[i][j][k].y = e[i][j-1][k].y;
-          e[i][j][k].z = e[i][j-1][k].z;
-          d = setup->dy[1][i][j-1][k];
-        }
-
-        if (setup->point_type[i][j][k+1] == CONTACT_EDGE &&
-            d < setup->dz[0][i][j][k+1]) {
-          e[i][j][k].x = e[i][j][k+1].x;
-          e[i][j][k].y = e[i][j][k+1].y;
-          e[i][j][k].z = e[i][j][k+1].z;
-          d = setup->dz[0][i][j][k+1];
-        } else if (setup->point_type[i][j][k-1] == CONTACT_EDGE &&
-                   d < setup->dz[1][i][j][k-1]) {
-          e[i][j][k].x = e[i][j][k-1].x;
-          e[i][j][k].y = e[i][j][k-1].y;
-          e[i][j][k].z = e[i][j][k-1].z;
-          d = setup->dz[1][i][j][k-1];
-        }
-      }
-    }
-  }
-  */
   if (strstr(fname, "unf")) {
     fprintf(fp, "#\n## start of unformatted data\n");
     for (i = 0; i < setup->numx; i++) {
@@ -810,7 +674,7 @@ int write_ev(GRETA_Siggen_Setup *setup, char *fname) {
     for (i = 0; i < setup->numx; i++) {
       for (j = 0; j < setup->numy; j++) {
         for (k = 0; k < setup->numz; k++) {
-          setup->dz[0][0][0][k] = setup->v[0][i][j][k]; // re-using float array to convert double to float
+          setup->dz[0][0][0][k] = setup->v[i][j][k]; // re-using float array to convert double to float
         }
         if (fwrite(setup->dz[0][0][0], sizeof(float), setup->numz, fp) != setup->numz) {
           error("Error while writing %s\n", fname);
@@ -824,7 +688,7 @@ int write_ev(GRETA_Siggen_Setup *setup, char *fname) {
         for (k = 0; k < setup->numz; k++) {
           fprintf(fp, "%6.2f %6.2f %6.2f\t %10e\n",
                   setup->x0 + i*grid, setup->y0 + j*grid, setup->zmin + k*grid, 		
-                  setup->v[0][i][j][k]);
+                  setup->v[i][j][k]);
         }
       }
     }
@@ -838,30 +702,9 @@ int write_ev(GRETA_Siggen_Setup *setup, char *fname) {
 static int malloc_arrays(GRETA_Siggen_Setup *setup) {
   int i, j, k;
 
-  if ((setup->v[0]       = malloc(setup->numx * sizeof(setup->v[0][0]))) == NULL ||
-      (setup->v[1]       = malloc(setup->numx * sizeof(setup->v[1][0]))) == NULL) {
-    error("malloc failed\n");
-    return -1;
-  }
-  for (i = 0; i < setup->numx; i++) {
-    if ((setup->v[0][i]       = malloc(setup->numy * sizeof(*setup->v[0][i]))) == NULL ||
-	(setup->v[1][i]       = malloc(setup->numy * sizeof(*setup->v[1][i]))) == NULL) {
-      error("malloc failed\n");
-      return -1;
-    }
-    for (j = 0; j < setup->numy; j++) {
-      if ((setup->v[0][i][j]       = malloc((setup->numz+1) * sizeof(*setup->v[0][i][j]))) == NULL ||
-          (setup->v[1][i][j]       = malloc((setup->numz+1) * sizeof(*setup->v[1][i][j]))) == NULL) {
-	error("malloc failed\n");
-	return -1;
-      }
-    }
-  }
 
   if ((setup->voxel_impurity_z = malloc(setup->numz * sizeof(double)))    == NULL ||
-      (setup->v[0]       = malloc(setup->numx * sizeof(setup->v[0][0])))  == NULL ||
-      (setup->v[1]       = malloc(setup->numx * sizeof(setup->v[1][0])))  == NULL ||
-      (setup->e          = malloc(setup->numx * sizeof(setup->e[0])))     == NULL ||
+      (setup->v          = malloc(setup->numx * sizeof(setup->v[0])))     == NULL ||
       (setup->dx[0]      = malloc(setup->numx * sizeof(setup->dx[0][0]))) == NULL ||
       (setup->dx[1]      = malloc(setup->numx * sizeof(setup->dx[1][0]))) == NULL ||
       (setup->dy[0]      = malloc(setup->numx * sizeof(setup->dy[0][0]))) == NULL ||
@@ -873,9 +716,7 @@ static int malloc_arrays(GRETA_Siggen_Setup *setup) {
     return -1;
   }
   for (i = 0; i < setup->numx; i++) {
-    if ((setup->v[0][i]       = malloc(setup->numy * sizeof(*setup->v[0][i])))  == NULL ||
-	(setup->v[1][i]       = malloc(setup->numy * sizeof(*setup->v[1][i])))  == NULL ||
-        (setup->e[i]          = malloc(setup->numy * sizeof(*setup->e[i])))     == NULL ||
+    if ((setup->v[i]          = malloc(setup->numy * sizeof(*setup->v[i])))     == NULL ||
         (setup->dx[0][i]      = malloc(setup->numy * sizeof(*setup->dx[0][i]))) == NULL ||
         (setup->dx[1][i]      = malloc(setup->numy * sizeof(*setup->dx[1][i]))) == NULL ||
         (setup->dy[0][i]      = malloc(setup->numy * sizeof(*setup->dy[0][i]))) == NULL ||
@@ -887,9 +728,7 @@ static int malloc_arrays(GRETA_Siggen_Setup *setup) {
       return -1;
     }
     for (j = 0; j < setup->numy; j++) {
-      if ((setup->v[0][i][j]       = malloc((setup->numz+1) * sizeof(*setup->v[0][i][j]))) == NULL ||
-          (setup->v[1][i][j]       = malloc((setup->numz+1) * sizeof(*setup->v[1][i][j]))) == NULL ||
-          (setup->e[i][j]          = malloc(setup->numz * sizeof(*setup->e[i][j])))     == NULL ||
+      if ((setup->v[i][j]          = malloc((setup->numz+1) * sizeof(*setup->v[i][j]))) == NULL ||
           (setup->dx[0][i][j]      = malloc(setup->numz * sizeof(*setup->dx[0][i][j]))) == NULL ||
           (setup->dx[1][i][j]      = malloc(setup->numz * sizeof(*setup->dx[1][i][j]))) == NULL ||
           (setup->dy[0][i][j]      = malloc(setup->numz * sizeof(*setup->dy[0][i][j]))) == NULL ||
@@ -903,7 +742,6 @@ static int malloc_arrays(GRETA_Siggen_Setup *setup) {
       for (k = 0; k < setup->numz; k++) {
         setup->dx[0][i][j][k] = setup->dy[0][i][j][k] = setup->dz[0][i][j][k] = 1.0;
         setup->dx[1][i][j][k] = setup->dy[1][i][j][k] = setup->dz[1][i][j][k] = 1.0;
-        setup->e[i][j][k] = 0;
         setup->point_type[i][j][k] = 99;
       }
     }

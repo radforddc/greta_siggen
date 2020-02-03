@@ -10,7 +10,6 @@ float fminf(float x, float y);
 
 static int in_crystal(GRETA_Siggen_Setup *setup, point pt);
 static int project_to_edges(GRETA_Siggen_Setup *setup, struct point pt, struct point projections[NCORNERS/2]);
-static int segment_number(GRETA_Siggen_Setup *setup, point pt);
 static int segment_number_new(GRETA_Siggen_Setup *setup, struct point pt,
                               float *distance_xy, float *distance_z, int *seg2_xy, int *seg2_z);
 
@@ -209,18 +208,18 @@ int init_ev_calc(GRETA_Siggen_Setup *setup) {
       y = setup->y0 + j*setup->xtal_grid;
       r = sqrt(x*x + y*y);
       for (k = 0; k < setup->numz; k++) {
-        setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV/5.0;
+        setup->v[i][j][k] = setup->xtal_HV/6.0;
 	if (setup->point_type[i][j][k] == CONTACT_0) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	  setup->v[i][j][k] = 0.0;
 	} else if (setup->point_type[i][j][k] == CONTACT_VB) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV;
+	  setup->v[i][j][k] = setup->xtal_HV;
 	} else if (setup->point_type[i][j][k] == OUTSIDE) {
-	  setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+	  setup->v[i][j][k] = 0.0;
 	} else {
-	  //setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*(setup->xtal_radius - r) /
-          //  (Setup->xtal_radius - setup->core_radius);
-	  if (setup->v[0][i][j][k] >= setup->xtal_HV*0.95) setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*0.95;
-	  if (setup->v[0][i][j][k] <= setup->xtal_HV*0.05) setup->v[0][i][j][k] = setup->v[1][i][j][k] = setup->xtal_HV*0.05;
+	  setup->v[i][j][k] = (setup->xtal_HV*(setup->xtal_radius - (r+setup->core_radius)) /
+                               (setup->xtal_radius - setup->core_radius));
+	  if (setup->v[i][j][k] >= setup->xtal_HV*0.95) setup->v[i][j][k] = setup->xtal_HV*0.95;
+	  if (setup->v[i][j][k] <= setup->xtal_HV*0.1) setup->v[i][j][k] = setup->xtal_HV*0.1;
 	}
       }
     }
@@ -232,59 +231,73 @@ int init_ev_calc(GRETA_Siggen_Setup *setup) {
 
 #define HSG 0.25  // half of segmentation boundary gap (mm)
 
- int init_wp_calc(GRETA_Siggen_Setup *setup, int cnum) {
-  int i, j, k;
+int init_wp_calc(GRETA_Siggen_Setup *setup, int cnum) {
+  int   i, j, k;
   point pt;
   int   seg, seg2xy, seg2z;
   float dxy, dz;
+  float x, y, r;
 
   for (i = 0; i < setup->numx; i++) {
     for (j = 0; j < setup->numy; j++) {
       for (k = 0; k < setup->numz; k++) {
-	setup->v[0][i][j][k] = setup->v[1][i][j][k] = 0.0;
+        setup->v[i][j][k] = 0.0;
       }
     }
   }
 
-  for (i = 0; i < setup->numx; i++) {
-    pt.x = setup->x0 + i*setup->xtal_grid;
-    for (j = 0; j < setup->numy; j++) {
-      pt.y = setup->y0 + j*setup->xtal_grid;
-      for (k = 0; k < setup->numz; k++) {
-	pt.z = setup->zmin + k*setup->xtal_grid;
-	if (setup->point_type[i][j][k] == CONTACT_VB) {
-	  if (cnum == setup->nseg_z*setup->nseg_phi) setup->v[1][i][j][k] = 1.0;
-	  else setup->v[1][i][j][k] = 0.0;
-	} else if (setup->point_type[i][j][k] == CONTACT_0) {
-	  if (cnum < setup->nseg_z*setup->nseg_phi) {
-	    // if (segment_number(setup, pt) == cnum) setup->v[1][i][j][k] = 1.0;
-	    if ((seg = segment_number_new(setup, pt, &dxy, &dz, &seg2xy, &seg2z)) == cnum) {
-	      setup->v[1][i][j][k] = 1.0;
-              if (dxy < HSG) setup->v[1][i][j][k]  = 0.5 * (1.0 + dxy/HSG);
-              if (dz  < HSG) setup->v[1][i][j][k] *= 0.5 * (1.0 + dz/HSG);
+  if (cnum == setup->nseg_z*setup->nseg_phi) {  //central contact WP
+    for (i = 0; i < setup->numx; i++) {
+      x = setup->x0 + i*setup->xtal_grid;
+      for (j = 0; j < setup->numy; j++) {
+        y = setup->y0 + j*setup->xtal_grid;
+        r = sqrt(x*x + y*y);
+        for (k = 0; k < setup->numz; k++) {
+          setup->v[i][j][k] = 1.0/5.0;
+          if (setup->point_type[i][j][k] == CONTACT_0) {
+            setup->v[i][j][k] = 0.0;
+          } else if (setup->point_type[i][j][k] == CONTACT_VB) {
+            setup->v[i][j][k] = 1.0;
+          } else if (setup->point_type[i][j][k] == OUTSIDE) {
+            setup->v[i][j][k] = 0.0;
+          } else {
+            setup->v[i][j][k] = ((setup->xtal_radius - (r+setup->core_radius)) /
+                                 (setup->xtal_radius - setup->core_radius));
+            if (setup->v[i][j][k] >= 0.95) setup->v[i][j][k] = 0.95;
+            if (setup->v[i][j][k] <= 0.1) setup->v[i][j][k] = 0.1;
+          }
+        }
+      }
+    }
+  } else {
+    for (i = 0; i < setup->numx; i++) {
+      pt.x = setup->x0 + i*setup->xtal_grid;
+      for (j = 0; j < setup->numy; j++) {
+        pt.y = setup->y0 + j*setup->xtal_grid;
+        for (k = 0; k < setup->numz; k++) {
+          pt.z = setup->zmin + k*setup->xtal_grid;
+          if (setup->point_type[i][j][k] == CONTACT_VB) {
+            setup->v[i][j][k] = 0.0;
+          } else if (setup->point_type[i][j][k] == CONTACT_0) {
+            if ((seg = segment_number_new(setup, pt, &dxy, &dz, &seg2xy, &seg2z)) == cnum) {
+              setup->v[i][j][k] = 1.0;
+              if (dxy < HSG) setup->v[i][j][k]  = 0.5 * (1.0 + dxy/HSG);
+              if (dz  < HSG) setup->v[i][j][k] *= 0.5 * (1.0 + dz/HSG);
             } else if (seg2xy == cnum && dxy < HSG) {
-              setup->v[1][i][j][k] = 0.5 * (1.0 - dxy/HSG);
+              setup->v[i][j][k] = 0.5 * (1.0 - dxy/HSG);
             } else if (seg2z == cnum && dz < HSG) {
-              setup->v[1][i][j][k] = 0.5 * (1.0 - dz/HSG);
+              setup->v[i][j][k] = 0.5 * (1.0 - dz/HSG);
             }
             if (cnum < 6 && fabs(pt.x) < HSG/2.0 && fabs(pt.y) < HSG/2.0)
-              setup->v[1][i][j][k] = 0.167;
+              setup->v[i][j][k] = 0.167;
             else if (cnum < 6 && fabs(pt.x) < HSG*2.0 && fabs(pt.y) < HSG*2.0)
-              setup->v[1][i][j][k] *= 0.33*(1.0 + sqrt(pt.x*pt.x + pt.y*pt.y)/HSG);
-            // if (cnum < 6 && fabs(pt.x) < 4.1 && fabs(pt.y) < 4.1 && setup->v[1][i][j][k] > 0)
-            //   printf("x, y = %5.2f %5.2f ; WP, dxy =  %5.2f %5.2f\n", pt.x, pt.y, setup->v[1][i][j][k], dxy);
-	  } else {
-	    setup->v[1][i][j][k] = 0.0;
-	  }
-	} else if (setup->point_type[i][j][k]  == OUTSIDE) {
-	  setup->v[1][i][j][k] = 0.0;
-	} else {
-	  setup->v[1][i][j][k] = 0.5;
-	}
-        setup->v[0][i][j][k] = setup->v[1][i][j][k];
+              setup->v[i][j][k] *= 0.33*(1.0 + sqrt(pt.x*pt.x + pt.y*pt.y)/HSG);
+          }
+        }
       }
     }
   }
+
   printf("wp ... init done\n");
   return 0;
 }
@@ -364,67 +377,6 @@ static int segment_number_new(GRETA_Siggen_Setup *setup, struct point pt,
   }
   printf("segment_number_new error: x y z %5.2f %5.2f %5.2f -> no solution\n", pt.x, pt.y, pt.z);
   return -1;
-}
-
-/* segment_number
-   returns the (geometrical) segment number at point pt, or -1 
-   if outside crystal
-*/
-static int segment_number(GRETA_Siggen_Setup *setup, point pt) {
-  int seg_phi, seg_z;
-  float thp, thn, th, costh;
-  struct point xyvect, edge_p[NCORNERS/2], side_pxy, cp, cpold;
-  int i, j, seg_phi_n, seg_phi_p;
-
-  //if (!in_crystal(setup, pt)) return -1;
-
-  xyvect = pt;
-  xyvect.z = 0.0;
-  project_to_edges(setup, pt, edge_p);
-  seg_z = 0;
-  /* find segment number in z direction */
-  for (i = 0; i < setup->nseg_z; i++) {
-    if (pt.z <= setup->zmax_segment[i]) {
-      seg_z = i;
-      break;
-    }
-  }
-  /* find segment number in phi direction */
-  thp = thn = M_PI;
-  side_pxy.z = 0;
-  seg_phi = seg_phi_p = seg_phi_n = 0;
-  for (i = 0; i < NCORNERS/2; i++) {
-    j = (i+1)%6;
-    side_pxy.x = (edge_p[i].x + edge_p[j].x)/2;
-    side_pxy.y = (edge_p[i].y + edge_p[j].y)/2;
-    costh = dot_prod(side_pxy, xyvect)
-      /sqrt(dot_prod(side_pxy, side_pxy)*dot_prod(xyvect, xyvect));
-    th = acos(costh);
-    cp = cross_prod(side_pxy, xyvect);
-    if (i == 0) {
-      cpold = cp;
-    }      
-    if (cpold.z*cp.z >= 0) {
-      if (th <= thp) {
-	thp = th;
-	seg_phi_p = i;
-      }
-    } else {
-      if (th <= thn) {
-	thn  = th;
-	seg_phi_n = i;
-      }
-    }
-  }
-  if (seg_phi_p - seg_phi_n == 1) seg_phi = seg_phi_p;
-  if (seg_phi_n - seg_phi_p == 1) seg_phi = seg_phi_n;
-  if (abs(seg_phi_n - seg_phi_p) == 5) seg_phi = 0;
-  //if (sign == 0.0) seg_phi = 0; //what?
-  if (setup->xtal_type == CRYSTAL_A)
-    seg_phi = (seg_phi + 4) % 6;
-  if (seg_phi < 0) seg_phi += 6;
-  
-  return setup->nseg_phi*seg_z + seg_phi;
 }
 
 /* returns 0 (false) or 1 (true) depending on whether pt is inside the crystal */

@@ -132,7 +132,7 @@ typedef struct {
   int   ncontacts, nsegments;
 
   //for fieldgen:
-  double ***v[2];
+  double ***v;
   char   ***point_type;
   float  ***epsilon;
   double *impurity_z;
