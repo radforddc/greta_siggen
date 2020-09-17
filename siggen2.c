@@ -29,6 +29,22 @@ static int rl_gets(char *line, int MAX_LEN){
   return 1;
 }
 
+static int rc_integrate(float *s_in, float *s_out, float tau, int time_steps){
+  int i, j;
+  float s_in_old, s;  // DCR: added so that it's okay to
+                      //   call this function with s_out == s_in
+  
+  for (i = 0; i < 37; i++){
+    s_in_old = s_in[i*time_steps];
+    s_out[i*time_steps] = 0.0;
+    for (j = 1; j < time_steps; j++){
+      s = s_out[i*time_steps + j-1] + (s_in_old - s_out[i*time_steps + j-1])/tau;
+      s_in_old = s_in[i*time_steps + j];
+      s_out[i*time_steps + j] = s;
+    }
+  }
+  return 0;
+}
 
 int main(int argc, char **argv)
 {
@@ -165,15 +181,15 @@ int main(int argc, char **argv)
         ix = lrintf(x/step - 0.5) + nx/2;
         iy = lrintf(y/step - 0.5) + ny/2;
         iz = lrintf(z/step - 0.5);
-        printf(" >> x y z %5.1f %5.1f %5.1f -> %3d %3d %3d\n",
+        printf(" >> x y z %5.1f %5.1f %5.1f -> nearest point is %3d %3d %3d\n",
                x, y, z, ix, iy, iz);
       }
-      if (ix < 0 || ix >= nx || iy <= 0 || iy >= ny || iz <= 0 || iz >= nz ||
+      if (ix < 0 || ix >= nx || iy < 0 || iy >= ny || iz < 0 || iz >= nz ||
           (seg = seg_dir[ix][iy][iz]) < 0) {
         printf("point is outside crystal\n");
         continue;
       }
-      printf("point is in segment %2d\n", seg);
+      printf("nearest point is in segment %2d\n", seg);
 
       if (fwhm < 0.03) {  // use only one grid point
         pos = pos_dir[ix][iy][iz];
@@ -199,20 +215,35 @@ int main(int argc, char **argv)
         }
 
       } else {       // sum several grid point signals
-        float fact[40] = {0}, sum1 = 0, sum2 = 0, f3;
-        float w  = step * 2.35482 / fwhm;
-        int   ix1, iy1, iz1, ns;
-        for (ns=0; ns<30 && ns<3.5*fwhm/step; ns++) {
-          fact[ns] = exp(-ns*ns * w*w);
-          sum1 += fact[ns];
+        float factx[100] = {0}, facty[100] = {0}, factz[100] = {0};
+        float sumx = 0, sumy = 0, sumz = 0, sum1 = 0, sum2 = 0, f3;
+        float dx, dy, dz, w  = step * 2.35482 / fwhm;
+        int   ix1, iy1, iz1, ns, nns;
+
+        nns = 3.5*fwhm/step + 0.5;
+        if (nns > 49) nns = 49;
+        ix = lrintf(x/step - 0.5) + nx/2;
+        iy = lrintf(y/step - 0.5) + ny/2;
+        iz = lrintf(z/step - 0.5);
+        dx = x/step - ((float) (ix - nx/2) + 0.5);
+        dy = y/step - ((float) (iy - ny/2) + 0.5);
+        dz = z/step - ((float) iz + 0.5);
+        printf(" dx, dy, dz = %f %f %f  nns = %d\n", dx, dy, dz, nns);
+        for (ns=0; ns<=2*nns; ns++) {
+          factx[ns] = exp(-(dx-nns+ns)*(dx-nns+ns) * w*w);
+          facty[ns] = exp(-(dy-nns+ns)*(dy-nns+ns) * w*w);
+          factz[ns] = exp(-(dz-nns+ns)*(dz-nns+ns) * w*w);
+          sumx += factx[ns];
+          sumy += facty[ns];
+          sumz += factz[ns];
         }
-        sum1 = sum1*sum1*sum1;
+        sum1 = sumx*sumy*sumz;
 
         for (i=0; i<4096; i++) fs[i] = 0;
-        for (ix1 = ix - ns + 1; ix1 < ix + ns; ix1++) {
-          for (iy1 = iy - ns + 1; iy1 < iy + ns; iy1++) {
-            for (iz1 = iz - ns + 1; iz1 < iz + ns; iz1++) {
-              f3 = fact[lrint(abs(ix-ix1))] * fact[lrint(abs(iy-iy1))] * fact[lrint(abs(iz-iz1))];
+        for (ix1 = ix - nns; ix1 <= ix + nns; ix1++) {
+          for (iy1 = iy - nns; iy1 <= iy + nns; iy1++) {
+            for (iz1 = iz - nns; iz1 <= iz + nns; iz1++) {
+              f3 = factx[lrint(abs(ix-ix1+nns))] * facty[lrint(abs(iy-iy1+nns))] * factz[lrint(abs(iz-iz1+nns))];
               if (f3/sum1 < 0.0002) continue;
               if (ix1 < 0 || ix1 >= nx || iy1 <= 0 || iy1 >= ny || iz1 <= 0 || iz1 >= nz ||
                   (seg = seg_dir[ix1][iy1][iz1]) < 0) {
@@ -242,7 +273,18 @@ int main(int argc, char **argv)
           }
         }
         for (i=0; i<4096; i++) fs[i] /= sum2;
+        j = seg = -1;
+        for (i=0; i<nsegs; i++) {
+          if (fs[i*100 + 98] > j) {
+            j = fs[i*100 + 98];
+            seg = i;
+          }
+        }
+        printf("Final segment number is %2d, %0.1f%%\n", seg, fs[seg*100 + 98]/10.0);
+
       }
+
+      if (tau > 0) rc_integrate(fs, fs, tau, 100);
 
       fpo = fopen("s.dat", "w");
       fwrite(fs, sizeof(fs), 1, fpo);
